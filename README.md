@@ -1,108 +1,107 @@
-# WebDAV Server and a 3D Printer
+> [!WARNING]  
+> Disclaimer: I threw this together on a weekend without prior Arduino experience. It's not clean and most likely contains bugs, so proceed with caution.
 
-This project is a WiFi WebDAV server using ESP8266 SoC. It maintains the filesystem on an SD card.
+# Auto-post files from FYSETC's SD-WIFI module to an HTTP(S) endpoint
 
-Supports the basic WebDav operations - *PROPFIND*, *GET*, *PUT*, *DELETE*, *MKCOL*, *MOVE* etc.
+## About this fork
 
-Once the WebDAV server is running on the ESP8266, a WebDAV client like Windows can access the filesystem on the SD card just like a cloud drive. The drive can also be mounted like a networked drive, and allows copying/pasting/deleting files on SD card remotely.
+This is a fork of the firmware for the FYSETC SD-WIFI module ([aliexpress.com/item/4001095471107.html](https://www.aliexpress.com/item/4001095471107.html)). Instead of spinning up a WebDAV server, this fork proactively posts a file to an HTTP(S) endpoint.
 
-### 3D Printer
+It has two modes of operation:
 
-I am using this setup as a networked drive for 3D Printer running Marlin. Following circuit with ESP8266 and a MicroSD adapter is fabricated on a PCB. A full size SD card adapter is glued to one end and provides access to all SPI data lines from printer. ESP8266 code avoids accessing micro SD card, when Marlin (printer's firmware) is reading/writing to it (detected using Chip Select line).
+1. Post the file every X seconds.
+2. Post the file every time after the other SD-card host uses (and frees up) the bus.
 
-GCode can be directly uploaded from the slicer (Cura) to this remote drive, thereby simplifying the workflow. 
+Other features include:
 
-![Printer Hookup Diagram](PrinterHookup2.jpg)
+* HTTPS support
+* Battery-efficient: stop POST-requests after a defined number of requests, or when the bus has not been used by the other host for 2 minutes (whichever comes first).
+* Send tail of file only: only send last x bytes of a file to support large append-only files.
 
-## Dependencies:
+## Usage
 
-1. [ESP8266 Arduino Core version 2.4](https://github.com/esp8266/Arduino)
-2. [SdFat library](https://github.com/greiman/SdFat)
+### Installation
 
-## Use:
+Flash one of the binaries from the "releases" section using [esptool.py](https://docs.espressif.com/projects/esptool/en/latest/esp8266/esptool/flashing-firmware.html).
+
+### Configuration
+
+This firmware reads its configuration from a file called `espconfig.json` in the root of the SD-card.
+
+The configuration should be in the following format:
+```
+{
+  "wifiSsid": "<Wifi SSID>",
+  "wifiPassword": "<Wifi Password>",
+  "filePath": "<Path to file that should be posted>",
+  "fileTailBytes": <How many bytes of the end of the file to post. 0 to disable>,
+  "endpointUrl": "<Endpoint URL to post to>",
+  "endpointAuthorization": "<Authorization header to attach to POST request>",
+  "postIntervalSeconds": "<Seconds to wait between POST requests. 0 to post after other Sd host frees up the bus>",
+  "postNumberBeforeShutdown": "<Number of POST requests to send before going to sleep>"
+}
+```
+
+Example:
+```
+{
+  "wifiSsid": "Wifi",
+  "wifiPassword": "ReplaceMe",
+  "filePath": "TANITA/GRAPHV1/DATA/DATA1.CSV",
+  "fileTailBytes": 5120,
+  "endpointUrl": "https://<your-endpoint>",
+  "endpointAuthorization": "Basic ABCDEF",
+  "postIntervalSeconds": -1,
+  "postNumberBeforeShutdown": 6
+}
+```
+
+### LED
+The LED serves two purposes: to understand roughly which state the FYSETC SD-WIFI is currently in and to distingish different (terminal) error states.
+
+#### Successful operation
+1. Power on: LED off
+2. While waiting for the other host to free the bus to read config: LED continuously on
+3. Reading config: LED off
+4. Connecting to WiFi: LED blinks fast (300ms)
+5. Optional: If waiting for other host to access and free bus: LED continuously on
+6. While succesfully posting data: LED off
+7. (5) and (6) repeat until the FYSETC SD-WIFI goes to sleep.
+
+#### Error states
+If anything goes wrong, the FYSETC SD-WIFI indicates this with a number of short LED blinks, followed by a long pause (repeated infinitely). Depending on the number of blinks, we can tell which stage the FYSETC SD-WIFI failed in:
+
+* 1 blink: Failed right after boot
+* 2 blinks: Failed initializing the SD
+* 3 blinks: Failed to load config (either because the file doesn't exist or because it is formatted incorrectly / fields are missing / fields can't be parsed)
+* 4 blinks: Failed to connect to Wifi
+* 5 blinks: File to post not found
+* 6 blinks: HTTP endpoint returned a non-2xx result code.
+
+## Original use-case: internet-connectivity for Tanita BC-601 scale
+
+The original/intended use case for this fork is to automatically sync measurement data from a [Tanita BC-601 segmental body composition scale](https://tanita.co.uk/bc-601). It already logs measurements to an SD-card. This fork enables live tracking of the measurement's online (e.g. on a dashboard).
+
+### Limitations
+
+* The scale is battery-powered, and does not supply enough power through it's SD-card slot to drive the ESP. To use this fork on the Tanita BC-601, the FYSETC SD-WIFI needs an external power supply (since FYSETC SD-WIFI uses micro-usb, a standard phone charger or powerbank does the job).
+* A restart/power-cycle of the scale while FYSETC SD-WIFI is running isn't possible. More specifically: after FYSETC SD-WIFI is powered-on, the scale starts correctly, and can take repeated measurements as long as it remains powered-on. If the scale fully powers off, every subsequent boot (while FYSETC SD-WIFI is still running) triggers an error message on the scale. I did not have time to fully debug this, and instead opted to simply add a switch to power cycle FYSETC SD-WIFI together with the scale.
+
+![Tanita Example](tanita.jpg)
+
+## Building
+
+### Dependencies
+
+1. [ESP8266 Arduino Core version 2.7.4](https://github.com/esp8266/Arduino)
+2. [SdFat library 2.2.2](https://github.com/greiman/SdFat)
+3. [Arduino_JSON 0.2.0](https://github.com/arduino-libraries/Arduino_JSON)
 
 ### Compile and upload
 
-#### Compile
+Install dependencies in Arduino IDE (tested with 2.3.2), then follow "Compile and upload" instructions on [FYSETC/ESPWebDAV](https://github.com/oogm/SdWifiHttpAutopost?tab=readme-ov-file#compile-and-upload).
 
-If you don't want to update the firmware. You don't need to do this. Compile and upload the program to an ESP8266 module. 
 
-- Open the project
-  
-  Download this project and open it with [arduino](https://www.arduino.cc/) software.
 
-- Add board manager link
-  
-  Add boards manager link: `https://arduino.esp8266.com/stable/package_esp8266com_index.json` to File->Preferences board manager, Documentation: https://arduino-esp8266.readthedocs.io/en/2.7.1/ 
 
-- Select board
-  
-  Select Tools->boards->Generic ESP8285 Module.
 
-- Click the Arduino compile button
-
-#### Upload
-
-1. Pulg in the USB cable to your computer
-2. Diag the switch on the module to `USB2UART`
-3. Press and hold the module FLSH 
-4. Connect the USB cable to the module
-5. Release the module FLSH button
-6. Click the Arduino upload button
-
-### Config
-
-First you can see our video [here](https://www.youtube.com/watch?v=YAFAK-jPcOs). You have two ways to config the module.
-
-*note: The card should be formatted for Fat16 or Fat32*
-
-#### Option 1: INI file
-
-You can edit the example ```SETUP.INI``` file in ```ini``` folder, change the SSID and PASSWORD value. And then copy ```SETUP.INI``` file to your root SD card. Then insert it to the module. 
-
-1. Turn the module option button to ```USB2UART``` 
-2. Open a COM software in your computer
-3. Connect the module to your computer with USB cable
-4. Open the software COM port
-
-you can see the module IP and other information.
-
-*note: if you miss the serial output, you can click the ```RST``` button in the module.*
-
-#### Option 2 : Command
-
-Insert your sdcard to the module.
-
-1. Turn the module option button to ```USB2UART``` 
-2. Open a COM software in your computer
-3. Connect the module to your computer with USB cable
-4. Open the software COM port
-
-And use the following command to connect the network or check the network status
-
-    M50: Set the wifi ssid , 'M50 ssid-name'
-    M51: Set the wifi password , 'M51 password'
-    M52: Start to connect the wifi
-    M53: Check the connection status
-
-### Access
-
-#### windows
-
-To access the drive from Windows, type ```\\ip\DavWWWRoot``` at the Run prompt, this will show in serial output as our [video](https://www.youtube.com/watch?v=YAFAK-jPcOs) shows.
-
-Or use Map Network Drive menu in Windows Explorer.
-
-#### MAC
-
-Just need to use  ```http://192.168.0.x``` in access network drive option
-
-## References
-
-Marlin Firmware - [http://marlinfw.org/](http://marlinfw.org/)   
-
-Cura Slicer - [https://ultimaker.com/en/products/ultimaker-cura-software](https://ultimaker.com/en/products/ultimaker-cura-software)   
-
-3D Printer LCD and SD Card Interface - [http://reprap.org/wiki/RepRapDiscount_Full_Graphic_Smart_Controller](http://reprap.org/wiki/RepRapDiscount_Full_Graphic_Smart_Controller)   
-
-LCD Schematics - [http://reprap.org/mediawiki/images/7/79/LCD_connect_SCHDOC.pdf](http://reprap.org/mediawiki/images/7/79/LCD_connect_SCHDOC.pdf)   
